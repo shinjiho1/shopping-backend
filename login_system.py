@@ -60,10 +60,7 @@ def create_access_token(data: dict, expires_delta: timedelta = None):
     to_encode.update({"exp": expire})
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
-# 루트 상태 확인
-@app.get("/")
-def read_root():
-    return {"message": "서버가 정상 작동 중입니다."}
+
 
 # 회원가입 API
 @app.post("/register")
@@ -133,5 +130,10 @@ def protected(session_id: str = Cookie(None)):
 # 로그아웃 API
 @app.post("/logout")
 def logout(response: Response):
-    response.delete_cookie("session_id")
+    response.delete_cookie(
+        key="session_id",
+        httponly=True,
+        samesite="lax",
+        path="/"
+    )
     return {"message": "로그아웃 되었습니다."}
