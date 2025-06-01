@@ -1,11 +1,11 @@
-from fastapi import FastAPI, HTTPException, Response, Cookie
+from fastapi import APIRouter, HTTPException, Response, Cookie
 from pydantic import BaseModel, EmailStr, validator
 import sqlite3
 import bcrypt
 from jose import JWTError, jwt
 from datetime import datetime, timedelta
 
-app = FastAPI()
+router = APIRouter()
 
 # JWT 설정
 SECRET_KEY = "your_secret_key"
@@ -60,13 +60,8 @@ def create_access_token(data: dict, expires_delta: timedelta = None):
     to_encode.update({"exp": expire})
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
-# 루트 상태 확인
-@app.get("/")
-def read_root():
-    return {"message": "서버가 정상 작동 중입니다."}
-
 # 회원가입 API
-@app.post("/register")
+@router.post("/register")
 def register(user: RegisterUser):
     conn = sqlite3.connect("users.db")
     cursor = conn.cursor()
@@ -85,7 +80,7 @@ def register(user: RegisterUser):
     return {"message": "회원가입 성공!"}
 
 # 로그인 API
-@app.post("/login")
+@router.post("/login")
 def login(user: LoginUser, response: Response):
     conn = sqlite3.connect("users.db")
     cursor = conn.cursor()
@@ -102,7 +97,7 @@ def login(user: LoginUser, response: Response):
             samesite="lax"
         )
 
-        # ✅ 로그인 성공 후 장바구니 정보 조회
+        # 로그인 성공 후 장바구니 정보 조회
         cursor.execute("SELECT product_id, quantity FROM cart_items WHERE user_email = ?", (user.email,))
         cart_items = cursor.fetchall()
         conn.close()
@@ -118,7 +113,7 @@ def login(user: LoginUser, response: Response):
         raise HTTPException(status_code=401, detail="이메일 또는 비밀번호가 틀렸습니다.")
 
 # 보호된 API
-@app.get("/protected")
+@router.get("/protected")
 def protected(session_id: str = Cookie(None)):
     if not session_id:
         raise HTTPException(status_code=401, detail="로그인이 필요합니다.")
@@ -131,7 +126,7 @@ def protected(session_id: str = Cookie(None)):
         raise HTTPException(status_code=401, detail="세션이 만료되었거나 유효하지 않습니다.")
 
 # 로그아웃 API
-@app.post("/logout")
+@router.post("/logout")
 def logout(response: Response):
     response.delete_cookie("session_id")
     return {"message": "로그아웃 되었습니다."}
