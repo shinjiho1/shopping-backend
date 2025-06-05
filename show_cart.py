@@ -52,15 +52,20 @@ def get_cart_items(user_email: str = Depends(get_user_email)):
 
 @router.post("/item/{id}")
 def add_cart_item(id: str , user_email: str = Depends(get_user_email)):
-    conn = sqlite3.connect("users.db")
-    cursor = conn.cursor()
-    cursor.execute(
+    try:
+        conn = sqlite3.connect("users.db", check_same_thread=False)
+        cursor = conn.cursor()
+        cursor.execute(
             "INSERT INTO cart_items (user_email, product_id) VALUES (?, ?)",
             (user_email, id)
-    )
-    conn.commit()
-    conn.close()
-    return {"message": f" 장바구니에 추가했습니다."}
+        )
+        conn.commit()
+        conn.close()
+        return {"message": f"장바구니에 추가했습니다."}
+
+    except:
+        raise HTTPException(status_code=400, detail="이미 장바구니에 추가된 상품입니다.")
+
 # ✅ 장바구니에서 물품 제거 (수량 지정 가능)
 @router.delete("/item/{id}")
 def remove_cart_item(

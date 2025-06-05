@@ -27,8 +27,9 @@ def init_db():
         CREATE TABLE IF NOT EXISTS cart_items (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_email TEXT NOT NULL,
-            product_id TEXT NOT NULL,
-            FOREIGN KEY (user_email) REFERENCES users (email)
+            product_id TEXT NOT NULL ,
+            FOREIGN KEY (user_email) REFERENCES users (email),
+            UNIQUE(user_email, product_id)
         )
     """)
     cursor.execute("""
