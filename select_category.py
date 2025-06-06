@@ -13,15 +13,15 @@ es = Elasticsearch(
     }
 )
 
-@router.get("/category")
+@router.get("/")
 def get_products_by_category(
-    main_category: str = Query(..., description="대분류 예: 의류, 전자제품, 가공식품, 책, 신발"),
-    sub_category: Optional[str] = Query(None, description="소분류 예: 상의, 하의 등")
+    type: str = Query(..., description="대분류 예: 의류, 전자제품, 가공식품, 책, 신발"),
+    category: Optional[str] = Query(None, description="소분류 예: 상의, 하의 등")
 ):
     # 검색 조건 구성
-    must_conditions = [{"match": {"main_category": main_category}}]
-    if sub_category:
-        must_conditions.append({"match": {"sub_category": sub_category}})
+    must_conditions = [{"match": {"main_category": type}}]
+    if category:
+        must_conditions.append({"match": {"middle_category": category}})
 
     # ES 조회
     response = es.search(
@@ -32,34 +32,19 @@ def get_products_by_category(
                     "must": must_conditions
                 }
             },
-            "_source": ["name", "price", "main_category", "sub_category", "image", "url", "brand", "description"],
+            "_source": ["title", "price", "image", "url"],
             "size": 100
         }
     )
 
     # 상품 결과
-    products = [hit["_source"] for hit in response["hits"]["hits"]]
+    products = [
+        {
+            "id": hit["_id"],
+            **hit["_source"]
+        }
+        for hit in response["hits"]["hits"]
+    ]
 
-    # 소분류 목록만 추출 (sub_category가 없을 때만)
-    subcategories = []
-    if not sub_category:
-        sub_response = es.search(
-            index="products",
-            body={
-                "query": {
-                    "match": {
-                        "main_category": main_category
-                    }
-                },
-                "_source": ["sub_category"],
-                "size": 100
-            }
-        )
-        subcategories = list(set(hit["_source"]["sub_category"] for hit in sub_response["hits"]["hits"] if "sub_category" in hit["_source"]))
 
-    return {
-        "main_category": main_category,
-        "sub_category": sub_category,
-        "subcategories": subcategories if not sub_category else [],
-        "products": products
-    }
+    return {"products": products}

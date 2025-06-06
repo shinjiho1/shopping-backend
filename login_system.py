@@ -4,7 +4,8 @@ import sqlite3
 import bcrypt
 from jose import JWTError, jwt
 from datetime import datetime, timedelta
-
+from email_validator import validate_email, EmailNotValidError
+from fastapi.responses import JSONResponse
 router = APIRouter()
 
 # JWT 설정
@@ -26,11 +27,19 @@ def init_db():
         CREATE TABLE IF NOT EXISTS cart_items (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_email TEXT NOT NULL,
-            product_id TEXT NOT NULL,
-            quantity INTEGER NOT NULL,
-            FOREIGN KEY (user_email) REFERENCES users (email)
+            product_id TEXT NOT NULL ,
+            FOREIGN KEY (user_email) REFERENCES users (email),
+            UNIQUE(user_email, product_id)
         )
     """)
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS user_clicks (
+            user_email TEXT Primary key,
+            last_clicked_name TEXT,
+            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_email) REFERENCES users(email)
+        )
+        """)
     conn.commit()
     conn.close()
 
@@ -38,11 +47,18 @@ init_db()
 
 # 회원가입용 모델
 class RegisterUser(BaseModel):
-    email: EmailStr
+    email: str
     password: str
     confirm_password: str
 
-    @validator("confirm_password")
+    @validator("email", pre=True, always=True)
+    def validate_email_format(cls, v):
+        try:
+            validate_email(v)
+        except ValueError:
+            raise HTTPException(status_code=422, detail="이메일 형식이 올바르지 않습니다.")
+        return v
+    @validator("confirm_password", pre=True, always=True)
     def passwords_match(cls, v, values):
         if "password" in values and v != values["password"]:
             raise ValueError("비밀번호가 일치하지 않습니다.")
@@ -59,6 +75,11 @@ def create_access_token(data: dict, expires_delta: timedelta = None):
     expire = datetime.utcnow() + (expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
     to_encode.update({"exp": expire})
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+
+# 루트 상태 확인
+@router.get("/")
+def read_root():
+    return {"message": "서버가 정상 작동 중입니다."}
 
 # 회원가입 API
 @router.post("/register")
@@ -90,24 +111,18 @@ def login(user: LoginUser, response: Response):
 
     if result and bcrypt.checkpw(user.password.encode('utf-8'), result[0].encode('utf-8')):
         access_token = create_access_token(data={"sub": user.email})
+        response = JSONResponse(content={
+            "message": f"{user.email}님 환영합니다!",
+
+        })
         response.set_cookie(
             key="session_id",
             value=access_token,
             httponly=True,
-            samesite="lax"
+            samesite="lax",
+            secure=False
         )
-
-        # 로그인 성공 후 장바구니 정보 조회
-        cursor.execute("SELECT product_id, quantity FROM cart_items WHERE user_email = ?", (user.email,))
-        cart_items = cursor.fetchall()
-        conn.close()
-
-        cart = [{"product_id": pid, "quantity": qty} for pid, qty in cart_items]
-
-        return {
-            "message": f"{user.email}님 환영합니다!",
-            "cart": cart
-        }
+        return response
     else:
         conn.close()
         raise HTTPException(status_code=401, detail="이메일 또는 비밀번호가 틀렸습니다.")
@@ -128,5 +143,10 @@ def protected(session_id: str = Cookie(None)):
 # 로그아웃 API
 @router.post("/logout")
 def logout(response: Response):
-    response.delete_cookie("session_id")
+    response.delete_cookie(
+        key="session_id",
+        httponly=True,
+        samesite="lax",
+        path="/"
+    )
     return {"message": "로그아웃 되었습니다."}

@@ -1,15 +1,15 @@
 from fastapi import APIRouter, HTTPException, Cookie, Depends, Query
 import sqlite3
 from jose import jwt, JWTError
-
+from elasticsearch import Elasticsearch
 router = APIRouter()
-
+from fastapi.responses import JSONResponse
 # JWT 설정
 SECRET_KEY = "your_secret_key"
 ALGORITHM = "HS256"
 
 # 사용자 인증 함수
-def get_user_email(session_id: str = Cookie(None)) -> str:
+def get_user_email(session_id: str = Cookie(default=None)) -> str:
     if not session_id:
         raise HTTPException(status_code=401, detail="로그인이 필요합니다.")
     try:
@@ -24,52 +24,64 @@ def get_user_email(session_id: str = Cookie(None)) -> str:
 # ✅ 장바구니 목록 조회
 @router.get("/items")
 def get_cart_items(user_email: str = Depends(get_user_email)):
+    es = Elasticsearch("http://localhost:9200",
+                       headers={
+                           "Accept": "application/vnd.elasticsearch+json; compatible-with=8",
+                           "Content-Type": "application/vnd.elasticsearch+json; compatible-with=8"
+                       })
     conn = sqlite3.connect("users.db")
     cursor = conn.cursor()
     cursor.execute(
-        "SELECT product_id, quantity FROM cart_items WHERE user_email = ?",
+        "SELECT product_id FROM cart_items WHERE user_email = ?",
         (user_email,)
     )
     items = cursor.fetchall()
     conn.close()
-    return {"cart": [{"product_name": name, "quantity": qty} for name, qty in items]}
+    product_ids = [item[0] for item in items]
+
+    if not product_ids:
+        return JSONResponse(content=[], status_code=200)
+    res = es.mget(index="products", body={"ids": product_ids})
+    docs = [{
+        "id":doc["_id"],
+        **doc["_source"]
+        }
+        for doc in res["docs"] if doc["found"]
+    ]
+    return {"results":docs}
+
+@router.post("/item/{id}")
+def add_cart_item(id: str , user_email: str = Depends(get_user_email)):
+    try:
+        conn = sqlite3.connect("users.db", check_same_thread=False)
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT INTO cart_items (user_email, product_id) VALUES (?, ?)",
+            (user_email, id)
+        )
+        conn.commit()
+        conn.close()
+        return {"message": f"장바구니에 추가했습니다."}
+
+    except:
+        raise HTTPException(status_code=400, detail="이미 장바구니에 추가된 상품입니다.")
 
 # ✅ 장바구니에서 물품 제거 (수량 지정 가능)
-@router.delete("/item/{product_name}")
+@router.delete("/item/{id}")
 def remove_cart_item(
-    product_name: str,
-    quantity: int = Query(..., gt=0, description="제거할 수량"),
+    id: str ,
     user_email: str = Depends(get_user_email)
 ):
     conn = sqlite3.connect("users.db")
     cursor = conn.cursor()
 
-    # 현재 수량 확인
+
     cursor.execute(
-        "SELECT quantity FROM cart_items WHERE user_email = ? AND product_id = ?",
-        (user_email, product_name)
-    )
-    row = cursor.fetchone()
-
-    if not row:
-        conn.close()
-        raise HTTPException(status_code=404, detail="장바구니에 해당 상품이 없습니다.")
-
-    current_qty = row[0]
-    if quantity >= current_qty:
-        # 전부 제거
-        cursor.execute(
             "DELETE FROM cart_items WHERE user_email = ? AND product_id = ?",
-            (user_email, product_name)
-        )
-    else:
-        # 일부만 감소
-        cursor.execute(
-            "UPDATE cart_items SET quantity = ? WHERE user_email = ? AND product_id = ?",
-            (current_qty - quantity, user_email, product_name)
-        )
+            (user_email, id)
+    )
 
     conn.commit()
     conn.close()
 
-    return {"message": f"{product_name} {quantity}개를 장바구니에서 제거했습니다."}
+    return {"message": " 장바구니에서 제거했습니다."}

@@ -3,7 +3,13 @@ from pydantic import BaseModel
 import requests
 import sqlite3
 from jose import jwt, JWTError
-
+from elasticsearch import Elasticsearch
+from elasticsearch.exceptions import NotFoundError
+es = Elasticsearch("http://localhost:9200",
+                   headers={
+                       "Accept": "application/vnd.elasticsearch+json; compatible-with=8",
+                       "Content-Type": "application/vnd.elasticsearch+json; compatible-with=8"
+                   })
 router = APIRouter()
 
 # JWT 설정
@@ -23,85 +29,102 @@ def get_user_email(session_id: str = Cookie(None)) -> str:
     except JWTError:
         raise HTTPException(status_code=401, detail="세션이 만료되었거나 유효하지 않음")
 
-# ✅ 상품 검색 API (product_id 제거)
-@router.get("/product/search")
+
+@router.get("/")
 def search_product(keyword: str = Query(..., description="검색 키워드")):
-    es_url = "http://localhost:9200/products/_search"
-    query = {
-        "query": {
+    keywords = [kw.strip() for kw in keyword.replace(",", " ").split() if kw.strip()]
+    if not keywords:
+        return {"results": []}
+
+    should_clauses = [
+        {
             "multi_match": {
-                "query": keyword,
-                "fields": ["name", "main_category", "sub_category", "brand", "description"]
+                "query": kw,
+                "fields": ["title", "main_category", "middle_category", "text_description"]
             }
         }
-    }
-    response = requests.get(es_url, json=query)
-    result = response.json()
-
-    hits = result.get("hits", {}).get("hits", [])
-    products = [
-        {
-            "name": doc["_source"].get("name"),
-            "price": doc["_source"].get("price"),
-            "url": doc["_source"].get("url"),
-            "main_category": doc["_source"].get("main_category"),
-            "sub_category": doc["_source"].get("sub_category"),
-            "brand": doc["_source"].get("brand"),
-            "image": doc["_source"].get("image"),
-            "description": doc["_source"].get("description")
-        }
-        for doc in hits
+        for kw in keywords
     ]
 
-    if products:
-        return {"results": products}
-    return {"message": "검색 결과 없음"}
+    query = {
+        "query": {
+            "bool": {
+                "should": should_clauses,
+                "minimum_should_match": 1  # 최소 한 단어 이상 포함된 결과 반환
+            }
+        },
+        "_source": ["title", "price", "image", "url"],
+        "size": 100
+    }
 
-# ✅ 장바구니 요청 데이터 (name 기준)
+    try:
+        result = es.search(index="products", body=query)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+    products = [
+        {
+            "id": hit["_id"],
+            **hit["_source"]
+        }
+        for hit in result["hits"]["hits"]
+    ]
+
+    return {"results": products}
+
+
 class AddToCartRequest(BaseModel):
     product_name: str
     quantity: int
 
-# ✅ 장바구니 추가 API (Elasticsearch에서 이름으로 확인)
-@router.post("/product/cart")
-def add_to_cart(item: AddToCartRequest, user_email: str = Depends(get_user_email)):
-    es_url = "http://localhost:9200/products/_search"
-    query = {
-        "query": {
-            "match": {
-                "name": item.product_name
-            }
-        }
+@router.get("/products")
+def get_products(id: str = Query(..., description="상품 ID"),
+                 session_id: str = Cookie(default=None)):
+    try:
+        doc = es.get(index="products", id=id)
+    except NotFoundError:
+        raise HTTPException(status_code=404, detail="상품을 찾을 수 없습니다")
+    source = doc.get("_source", {})
+
+    user_email = None
+    if session_id:
+        try:
+            payload = jwt.decode(session_id, SECRET_KEY, algorithms=[ALGORITHM])
+            user_email = payload.get("sub")
+
+        except JWTError:
+            raise HTTPException(status_code=401, detail="유효하지 않은 세션입니다.")
+    title = source.get("title")
+
+    if user_email and title:
+        try:
+            conn = sqlite3.connect("users.db")
+            cursor = conn.cursor()
+
+            # UPSERT (기존에 있으면 UPDATE, 없으면 INSERT)
+            cursor.execute("""
+                INSERT INTO user_clicks (user_email, last_clicked_name)
+                VALUES (?, ?)
+                ON CONFLICT(user_email) DO UPDATE SET
+                    last_clicked_name=excluded.last_clicked_name,
+                    timestamp=CURRENT_TIMESTAMP
+            """, (user_email, title))
+
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            print(f"[오류] 클릭 정보 저장 실패: {e}")
+    product = {
+        "id": doc["_id"],
+        "title": title,
+        "price": source.get("price"),
+        "url": source.get("url"),
+        "image_url": source.get("image"),
+        "text_description": source.get("text_description"),
+        "image_description": source.get("image_description"),
     }
-    es_response = requests.get(es_url, json=query)
-    hits = es_response.json().get("hits", {}).get("hits", [])
 
-    if not hits:
-        raise HTTPException(status_code=404, detail="존재하지 않는 상품입니다.")
+    return product
 
-    # SQLite에 장바구니 저장
-    conn = sqlite3.connect("users.db")
-    cursor = conn.cursor()
 
-    cursor.execute(
-        "SELECT quantity FROM cart_items WHERE user_email = ? AND product_id = ?",
-        (user_email, item.product_name)
-    )
-    row = cursor.fetchone()
-
-    if row:
-        new_qty = row[0] + item.quantity
-        cursor.execute(
-            "UPDATE cart_items SET quantity = ? WHERE user_email = ? AND product_id = ?",
-            (new_qty, user_email, item.product_name)
-        )
-    else:
-        cursor.execute(
-            "INSERT INTO cart_items (user_email, product_id, quantity) VALUES (?, ?, ?)",
-            (user_email, item.product_name, item.quantity)
-        )
-
-    conn.commit()
-    conn.close()
-
-    return {"message": f"{item.product_name}가 장바구니에 추가되었습니다."}
