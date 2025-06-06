@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-
+from login_system import init_db
 # 각 기능 라우터 import
 from login_system import router as login_router
 from search_product import router as search_router
@@ -19,6 +19,7 @@ app.add_middleware(
 
 @app.get("/")
 def read_root():
+    init_db()
     return {"message": "서버가 정상 작동 중입니다."}
 # 라우팅 통합
 

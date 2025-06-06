@@ -9,7 +9,7 @@ SECRET_KEY = "your_secret_key"
 ALGORITHM = "HS256"
 
 # 사용자 인증 함수
-def get_user_email(session_id: str = Cookie(None)) -> str:
+def get_user_email(session_id: str = Cookie(default=None)) -> str:
     if not session_id:
         raise HTTPException(status_code=401, detail="로그인이 필요합니다.")
     try:
